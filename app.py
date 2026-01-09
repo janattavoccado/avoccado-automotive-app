@@ -1,16 +1,16 @@
 """
 Advanced Vehicle Search & CRM Application
 With Apify Mobile.de Scraper Integration
-SQLite Database, PDF Generation, and Offer Management
+PostgreSQL Database, PDF Generation, and Offer Management
 """
 
 import os
 import logging
 import json
-import sqlite3
 import re
 from datetime import datetime
 from io import BytesIO
+from urllib.parse import urlparse
 from flask import Flask, render_template_string, request, jsonify, send_file
 from dotenv import load_dotenv
 from apify_client import ApifyClient
@@ -19,6 +19,15 @@ from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib.units import inch
 from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, Image
 from reportlab.lib import colors
+
+# Try to import psycopg2 for PostgreSQL, fall back to sqlite3 for local development
+try:
+    import psycopg2
+    from psycopg2.extras import RealDictCursor
+    HAS_POSTGRES = True
+except ImportError:
+    import sqlite3
+    HAS_POSTGRES = False
 
 # Load environment variables
 load_dotenv()
@@ -32,11 +41,27 @@ app = Flask(__name__, static_folder='statics', static_url_path='/static')
 app.config['SECRET_KEY'] = os.getenv('SECRET_KEY', 'dev-secret-key')
 
 # Initialize Apify client
-APIFY_API_KEY = os.getenv('APIFY_API_KEY')
+APIPY_API_KEY = os.getenv('APIFY_API_KEY')
 apify_client = ApifyClient(APIFY_API_KEY) if APIFY_API_KEY else None
 
-# Database setup
-DB_PATH = 'vehicle_crm.db'
+# Database setup - PostgreSQL for production, SQLite for local development
+DATABASE_URL = os.getenv('DATABASE_URL')
+
+# Fix Heroku's postgres:// URL to postgresql://
+if DATABASE_URL and DATABASE_URL.startswith('postgres://'):
+    DATABASE_URL = DATABASE_URL.replace('postgres://', 'postgresql://', 1)
+
+# Fallback to SQLite for local development
+SQLITE_PATH = 'vehicle_crm.db'
+
+def get_db_connection():
+    """Get database connection - PostgreSQL for production, SQLite for local"""
+    if DATABASE_URL and HAS_POSTGRES:
+        conn = psycopg2.connect(DATABASE_URL, sslmode='require')
+        return conn, 'postgres'
+    else:
+        conn = sqlite3.connect(SQLITE_PATH)
+        return conn, 'sqlite'
 
 # ============================================================================
 # VALIDATION HELPERS
@@ -52,48 +77,79 @@ def validate_email(email: str) -> bool:
 # ============================================================================
 
 def init_database():
-    """Initialize SQLite database for CRM"""
-    conn = sqlite3.connect(DB_PATH)
+    """Initialize database for CRM - PostgreSQL or SQLite"""
+    conn, db_type = get_db_connection()
     cursor = conn.cursor()
     
-    # Vehicles table
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS vehicles (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            title TEXT NOT NULL,
-            price TEXT,
-            mileage TEXT,
-            year TEXT,
-            fuel TEXT,
-            transmission TEXT,
-            power TEXT,
-            url TEXT UNIQUE,
-            properties TEXT,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )
-    ''')
-    
-    # Offers table
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS offers (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            vehicle_id INTEGER NOT NULL,
-            client_email TEXT NOT NULL,
-            client_name TEXT,
-            offered_price TEXT NOT NULL,
-            notes TEXT,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            FOREIGN KEY (vehicle_id) REFERENCES vehicles (id)
-        )
-    ''')
+    if db_type == 'postgres':
+        # PostgreSQL tables
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS vehicles (
+                id SERIAL PRIMARY KEY,
+                title TEXT NOT NULL,
+                price TEXT,
+                mileage TEXT,
+                year TEXT,
+                fuel TEXT,
+                transmission TEXT,
+                power TEXT,
+                url TEXT UNIQUE,
+                properties TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        ''')
+        
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS offers (
+                id SERIAL PRIMARY KEY,
+                vehicle_id INTEGER NOT NULL,
+                client_email TEXT NOT NULL,
+                client_name TEXT,
+                offered_price TEXT NOT NULL,
+                notes TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (vehicle_id) REFERENCES vehicles (id) ON DELETE CASCADE
+            )
+        ''')
+        logger.info('PostgreSQL database initialized')
+    else:
+        # SQLite tables
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS vehicles (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                title TEXT NOT NULL,
+                price TEXT,
+                mileage TEXT,
+                year TEXT,
+                fuel TEXT,
+                transmission TEXT,
+                power TEXT,
+                url TEXT UNIQUE,
+                properties TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        ''')
+        
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS offers (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                vehicle_id INTEGER NOT NULL,
+                client_email TEXT NOT NULL,
+                client_name TEXT,
+                offered_price TEXT NOT NULL,
+                notes TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (vehicle_id) REFERENCES vehicles (id)
+            )
+        ''')
+        logger.info('SQLite database initialized')
     
     conn.commit()
     conn.close()
-    logger.info('Database initialized')
 
 def save_vehicle_to_db(vehicle_data: dict) -> int:
     """Save vehicle data to database and return vehicle ID"""
-    conn = sqlite3.connect(DB_PATH)
+    conn, db_type = get_db_connection()
     cursor = conn.cursor()
     
     try:
@@ -102,31 +158,52 @@ def save_vehicle_to_db(vehicle_data: dict) -> int:
         
         # Check if vehicle already exists by URL
         if url:
-            cursor.execute('SELECT id FROM vehicles WHERE url = ?', (url,))
+            if db_type == 'postgres':
+                cursor.execute('SELECT id FROM vehicles WHERE url = %s', (url,))
+            else:
+                cursor.execute('SELECT id FROM vehicles WHERE url = ?', (url,))
             existing = cursor.fetchone()
             if existing:
                 logger.info(f'Vehicle already exists with ID: {existing[0]}')
                 return existing[0]
         
-        cursor.execute('''
-            INSERT INTO vehicles 
-            (title, price, mileage, year, fuel, transmission, power, url, properties)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-        ''', (
-            vehicle_data.get('title'),
-            vehicle_data.get('price'),
-            vehicle_data.get('mileage'),
-            vehicle_data.get('year'),
-            vehicle_data.get('fuel'),
-            vehicle_data.get('transmission'),
-            vehicle_data.get('power'),
-            url,
-            properties_json
-        ))
+        if db_type == 'postgres':
+            cursor.execute('''
+                INSERT INTO vehicles 
+                (title, price, mileage, year, fuel, transmission, power, url, properties)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                RETURNING id
+            ''', (
+                vehicle_data.get('title'),
+                vehicle_data.get('price'),
+                vehicle_data.get('mileage'),
+                vehicle_data.get('year'),
+                vehicle_data.get('fuel'),
+                vehicle_data.get('transmission'),
+                vehicle_data.get('power'),
+                url,
+                properties_json
+            ))
+            vehicle_id = cursor.fetchone()[0]
+        else:
+            cursor.execute('''
+                INSERT INTO vehicles 
+                (title, price, mileage, year, fuel, transmission, power, url, properties)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ''', (
+                vehicle_data.get('title'),
+                vehicle_data.get('price'),
+                vehicle_data.get('mileage'),
+                vehicle_data.get('year'),
+                vehicle_data.get('fuel'),
+                vehicle_data.get('transmission'),
+                vehicle_data.get('power'),
+                url,
+                properties_json
+            ))
+            vehicle_id = cursor.lastrowid
         
         conn.commit()
-        vehicle_id = cursor.lastrowid
-        
         logger.info(f'Vehicle saved to database with ID: {vehicle_id}')
         return vehicle_id
         
@@ -138,25 +215,39 @@ def save_vehicle_to_db(vehicle_data: dict) -> int:
 
 def save_offer_to_db(offer_data: dict) -> int:
     """Save offer data to database and return offer ID"""
-    conn = sqlite3.connect(DB_PATH)
+    conn, db_type = get_db_connection()
     cursor = conn.cursor()
     
     try:
-        cursor.execute('''
-            INSERT INTO offers 
-            (vehicle_id, client_email, client_name, offered_price, notes)
-            VALUES (?, ?, ?, ?, ?)
-        ''', (
-            offer_data.get('vehicle_id'),
-            offer_data.get('client_email'),
-            offer_data.get('client_name'),
-            offer_data.get('offered_price'),
-            offer_data.get('notes')
-        ))
+        if db_type == 'postgres':
+            cursor.execute('''
+                INSERT INTO offers 
+                (vehicle_id, client_email, client_name, offered_price, notes)
+                VALUES (%s, %s, %s, %s, %s)
+                RETURNING id
+            ''', (
+                offer_data.get('vehicle_id'),
+                offer_data.get('client_email'),
+                offer_data.get('client_name'),
+                offer_data.get('offered_price'),
+                offer_data.get('notes')
+            ))
+            offer_id = cursor.fetchone()[0]
+        else:
+            cursor.execute('''
+                INSERT INTO offers 
+                (vehicle_id, client_email, client_name, offered_price, notes)
+                VALUES (?, ?, ?, ?, ?)
+            ''', (
+                offer_data.get('vehicle_id'),
+                offer_data.get('client_email'),
+                offer_data.get('client_name'),
+                offer_data.get('offered_price'),
+                offer_data.get('notes')
+            ))
+            offer_id = cursor.lastrowid
         
         conn.commit()
-        offer_id = cursor.lastrowid
-        
         logger.info(f'Offer saved to database with ID: {offer_id}')
         return offer_id
         
@@ -168,14 +259,20 @@ def save_offer_to_db(offer_data: dict) -> int:
 
 def get_vehicle_by_id(vehicle_id: int) -> dict:
     """Get vehicle data from database"""
-    conn = sqlite3.connect(DB_PATH)
+    conn, db_type = get_db_connection()
     cursor = conn.cursor()
     
     try:
-        cursor.execute('''
-            SELECT id, title, price, mileage, year, fuel, transmission, power, url, properties
-            FROM vehicles WHERE id = ?
-        ''', (vehicle_id,))
+        if db_type == 'postgres':
+            cursor.execute('''
+                SELECT id, title, price, mileage, year, fuel, transmission, power, url, properties
+                FROM vehicles WHERE id = %s
+            ''', (vehicle_id,))
+        else:
+            cursor.execute('''
+                SELECT id, title, price, mileage, year, fuel, transmission, power, url, properties
+                FROM vehicles WHERE id = ?
+            ''', (vehicle_id,))
         
         result = cursor.fetchone()
         if result:
@@ -204,7 +301,7 @@ def get_vehicle_by_id(vehicle_id: int) -> dict:
 
 def get_all_vehicles() -> list:
     """Get all vehicles from database"""
-    conn = sqlite3.connect(DB_PATH)
+    conn, db_type = get_db_connection()
     cursor = conn.cursor()
     
     try:
@@ -216,6 +313,9 @@ def get_all_vehicles() -> list:
         results = cursor.fetchall()
         vehicles = []
         for row in results:
+            created_at = row[9]
+            if created_at and hasattr(created_at, 'isoformat'):
+                created_at = created_at.isoformat()
             vehicles.append({
                 'id': row[0],
                 'title': row[1],
@@ -226,7 +326,7 @@ def get_all_vehicles() -> list:
                 'transmission': row[6],
                 'power': row[7],
                 'url': row[8],
-                'created_at': row[9]
+                'created_at': str(created_at) if created_at else None
             })
         return vehicles
     except Exception as e:
@@ -237,7 +337,7 @@ def get_all_vehicles() -> list:
 
 def get_all_offers() -> list:
     """Get all offers with vehicle info from database"""
-    conn = sqlite3.connect(DB_PATH)
+    conn, db_type = get_db_connection()
     cursor = conn.cursor()
     
     try:
@@ -252,6 +352,9 @@ def get_all_offers() -> list:
         results = cursor.fetchall()
         offers = []
         for row in results:
+            created_at = row[6]
+            if created_at and hasattr(created_at, 'isoformat'):
+                created_at = created_at.isoformat()
             offers.append({
                 'id': row[0],
                 'vehicle_id': row[1],
@@ -259,7 +362,7 @@ def get_all_offers() -> list:
                 'client_name': row[3],
                 'offered_price': row[4],
                 'notes': row[5],
-                'created_at': row[6],
+                'created_at': str(created_at) if created_at else None,
                 'vehicle_title': row[7]
             })
         return offers
@@ -271,26 +374,44 @@ def get_all_offers() -> list:
 
 def update_vehicle(vehicle_id: int, data: dict) -> bool:
     """Update vehicle in database"""
-    conn = sqlite3.connect(DB_PATH)
+    conn, db_type = get_db_connection()
     cursor = conn.cursor()
     
     try:
-        cursor.execute('''
-            UPDATE vehicles 
-            SET title = ?, price = ?, mileage = ?, year = ?, fuel = ?, 
-                transmission = ?, power = ?, url = ?
-            WHERE id = ?
-        ''', (
-            data.get('title'),
-            data.get('price'),
-            data.get('mileage'),
-            data.get('year'),
-            data.get('fuel'),
-            data.get('transmission'),
-            data.get('power'),
-            data.get('url'),
-            vehicle_id
-        ))
+        if db_type == 'postgres':
+            cursor.execute('''
+                UPDATE vehicles 
+                SET title = %s, price = %s, mileage = %s, year = %s, fuel = %s, 
+                    transmission = %s, power = %s, url = %s
+                WHERE id = %s
+            ''', (
+                data.get('title'),
+                data.get('price'),
+                data.get('mileage'),
+                data.get('year'),
+                data.get('fuel'),
+                data.get('transmission'),
+                data.get('power'),
+                data.get('url'),
+                vehicle_id
+            ))
+        else:
+            cursor.execute('''
+                UPDATE vehicles 
+                SET title = ?, price = ?, mileage = ?, year = ?, fuel = ?, 
+                    transmission = ?, power = ?, url = ?
+                WHERE id = ?
+            ''', (
+                data.get('title'),
+                data.get('price'),
+                data.get('mileage'),
+                data.get('year'),
+                data.get('fuel'),
+                data.get('transmission'),
+                data.get('power'),
+                data.get('url'),
+                vehicle_id
+            ))
         conn.commit()
         return cursor.rowcount > 0
     except Exception as e:
@@ -301,21 +422,34 @@ def update_vehicle(vehicle_id: int, data: dict) -> bool:
 
 def update_offer(offer_id: int, data: dict) -> bool:
     """Update offer in database"""
-    conn = sqlite3.connect(DB_PATH)
+    conn, db_type = get_db_connection()
     cursor = conn.cursor()
     
     try:
-        cursor.execute('''
-            UPDATE offers 
-            SET client_email = ?, client_name = ?, offered_price = ?, notes = ?
-            WHERE id = ?
-        ''', (
-            data.get('client_email'),
-            data.get('client_name'),
-            data.get('offered_price'),
-            data.get('notes'),
-            offer_id
-        ))
+        if db_type == 'postgres':
+            cursor.execute('''
+                UPDATE offers 
+                SET client_email = %s, client_name = %s, offered_price = %s, notes = %s
+                WHERE id = %s
+            ''', (
+                data.get('client_email'),
+                data.get('client_name'),
+                data.get('offered_price'),
+                data.get('notes'),
+                offer_id
+            ))
+        else:
+            cursor.execute('''
+                UPDATE offers 
+                SET client_email = ?, client_name = ?, offered_price = ?, notes = ?
+                WHERE id = ?
+            ''', (
+                data.get('client_email'),
+                data.get('client_name'),
+                data.get('offered_price'),
+                data.get('notes'),
+                offer_id
+            ))
         conn.commit()
         return cursor.rowcount > 0
     except Exception as e:
@@ -326,14 +460,20 @@ def update_offer(offer_id: int, data: dict) -> bool:
 
 def delete_vehicle(vehicle_id: int) -> bool:
     """Delete vehicle from database"""
-    conn = sqlite3.connect(DB_PATH)
+    conn, db_type = get_db_connection()
     cursor = conn.cursor()
     
     try:
-        # First delete related offers
-        cursor.execute('DELETE FROM offers WHERE vehicle_id = ?', (vehicle_id,))
-        # Then delete vehicle
-        cursor.execute('DELETE FROM vehicles WHERE id = ?', (vehicle_id,))
+        if db_type == 'postgres':
+            # First delete related offers
+            cursor.execute('DELETE FROM offers WHERE vehicle_id = %s', (vehicle_id,))
+            # Then delete vehicle
+            cursor.execute('DELETE FROM vehicles WHERE id = %s', (vehicle_id,))
+        else:
+            # First delete related offers
+            cursor.execute('DELETE FROM offers WHERE vehicle_id = ?', (vehicle_id,))
+            # Then delete vehicle
+            cursor.execute('DELETE FROM vehicles WHERE id = ?', (vehicle_id,))
         conn.commit()
         return cursor.rowcount > 0
     except Exception as e:
@@ -344,11 +484,14 @@ def delete_vehicle(vehicle_id: int) -> bool:
 
 def delete_offer(offer_id: int) -> bool:
     """Delete offer from database"""
-    conn = sqlite3.connect(DB_PATH)
+    conn, db_type = get_db_connection()
     cursor = conn.cursor()
     
     try:
-        cursor.execute('DELETE FROM offers WHERE id = ?', (offer_id,))
+        if db_type == 'postgres':
+            cursor.execute('DELETE FROM offers WHERE id = %s', (offer_id,))
+        else:
+            cursor.execute('DELETE FROM offers WHERE id = ?', (offer_id,))
         conn.commit()
         return cursor.rowcount > 0
     except Exception as e:
@@ -359,20 +502,32 @@ def delete_offer(offer_id: int) -> bool:
 
 def get_offer_by_id(offer_id: int) -> dict:
     """Get offer data from database"""
-    conn = sqlite3.connect(DB_PATH)
+    conn, db_type = get_db_connection()
     cursor = conn.cursor()
     
     try:
-        cursor.execute('''
-            SELECT o.id, o.vehicle_id, o.client_email, o.client_name, o.offered_price, 
-                   o.notes, o.created_at, v.title as vehicle_title
-            FROM offers o
-            LEFT JOIN vehicles v ON o.vehicle_id = v.id
-            WHERE o.id = ?
-        ''', (offer_id,))
+        if db_type == 'postgres':
+            cursor.execute('''
+                SELECT o.id, o.vehicle_id, o.client_email, o.client_name, o.offered_price, 
+                       o.notes, o.created_at, v.title as vehicle_title
+                FROM offers o
+                LEFT JOIN vehicles v ON o.vehicle_id = v.id
+                WHERE o.id = %s
+            ''', (offer_id,))
+        else:
+            cursor.execute('''
+                SELECT o.id, o.vehicle_id, o.client_email, o.client_name, o.offered_price, 
+                       o.notes, o.created_at, v.title as vehicle_title
+                FROM offers o
+                LEFT JOIN vehicles v ON o.vehicle_id = v.id
+                WHERE o.id = ?
+            ''', (offer_id,))
         
         row = cursor.fetchone()
         if row:
+            created_at = row[6]
+            if created_at and hasattr(created_at, 'isoformat'):
+                created_at = created_at.isoformat()
             return {
                 'id': row[0],
                 'vehicle_id': row[1],
@@ -380,7 +535,7 @@ def get_offer_by_id(offer_id: int) -> dict:
                 'client_name': row[3],
                 'offered_price': row[4],
                 'notes': row[5],
-                'created_at': row[6],
+                'created_at': str(created_at) if created_at else None,
                 'vehicle_title': row[7]
             }
     except Exception as e:
@@ -392,7 +547,7 @@ def get_offer_by_id(offer_id: int) -> dict:
 
 def get_dashboard_stats() -> dict:
     """Get statistics for admin dashboard"""
-    conn = sqlite3.connect(DB_PATH)
+    conn, db_type = get_db_connection()
     cursor = conn.cursor()
     
     try:
