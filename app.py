@@ -41,7 +41,7 @@ app = Flask(__name__, static_folder='statics', static_url_path='/static')
 app.config['SECRET_KEY'] = os.getenv('SECRET_KEY', 'dev-secret-key')
 
 # Initialize Apify client
-APIPY_API_KEY = os.getenv('APIFY_API_KEY')
+APIFY_API_KEY = os.getenv('APIFY_API_KEY')
 apify_client = ApifyClient(APIFY_API_KEY) if APIFY_API_KEY else None
 
 # Database setup - PostgreSQL for production, SQLite for local development
