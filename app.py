@@ -2330,24 +2330,37 @@ def create_offer():
 def download_offer_pdf(offer_id):
     """Generate and download PDF for an offer"""
     try:
-        conn = sqlite3.connect(DB_PATH)
+        conn, db_type = get_db_connection()
         cursor = conn.cursor()
         
-        cursor.execute('''
-            SELECT o.vehicle_id, o.client_email, o.client_name, o.offered_price, o.notes
-            FROM offers o WHERE o.id = ?
-        ''', (offer_id,))
+        if db_type == 'postgres':
+            cursor.execute('''
+                SELECT o.vehicle_id, o.client_email, o.client_name, o.offered_price, o.notes
+                FROM offers o WHERE o.id = %s
+            ''', (offer_id,))
+        else:
+            cursor.execute('''
+                SELECT o.vehicle_id, o.client_email, o.client_name, o.offered_price, o.notes
+                FROM offers o WHERE o.id = ?
+            ''', (offer_id,))
         
         offer_row = cursor.fetchone()
         if not offer_row:
+            conn.close()
             return jsonify({'success': False, 'error': 'Offer not found'}), 404
         
         vehicle_id, client_email, client_name, offered_price, notes = offer_row
         
-        cursor.execute('''
-            SELECT title, price, mileage, year, fuel, transmission, power, url, properties
-            FROM vehicles WHERE id = ?
-        ''', (vehicle_id,))
+        if db_type == 'postgres':
+            cursor.execute('''
+                SELECT title, price, mileage, year, fuel, transmission, power, url, properties
+                FROM vehicles WHERE id = %s
+            ''', (vehicle_id,))
+        else:
+            cursor.execute('''
+                SELECT title, price, mileage, year, fuel, transmission, power, url, properties
+                FROM vehicles WHERE id = ?
+            ''', (vehicle_id,))
         
         vehicle_row = cursor.fetchone()
         conn.close()
