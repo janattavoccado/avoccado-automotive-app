@@ -11,7 +11,7 @@ import re
 from datetime import datetime
 from io import BytesIO
 from urllib.parse import urlparse
-from flask import Flask, render_template_string, request, jsonify, send_file
+from flask import Flask, render_template_string, request, jsonify, send_file, make_response
 from dotenv import load_dotenv
 from apify_client import ApifyClient
 from reportlab.lib.pagesizes import letter
