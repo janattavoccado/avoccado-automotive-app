@@ -73,6 +73,231 @@ def validate_email(email: str) -> bool:
     return bool(re.match(pattern, email))
 
 # ============================================================================
+# CROATIAN PPMV TAX CALCULATOR
+# ============================================================================
+
+def calculate_ppmv(original_price: float, co2_emission: float, fuel_type: str, 
+                   first_registration_year: int, is_new: bool = False,
+                   seats: int = 5, is_plugin_hybrid: bool = False, 
+                   electric_range_km: int = 0, is_camper: bool = False) -> dict:
+    """
+    Calculate Croatian PPMV (Posebni Porez na Motorna Vozila) tax.
+    
+    Args:
+        original_price: Original new price of the vehicle in EUR (novonabavna cijena)
+        co2_emission: CO2 emission in g/km (WLTP for vehicles from 2021+)
+        fuel_type: 'diesel', 'petrol', 'lpg', 'cng', 'hybrid', 'electric'
+        first_registration_year: Year of first registration
+        is_new: True if vehicle is new (< 6000km or < 6 months old)
+        seats: Number of seats (8 or 9 get reductions)
+        is_plugin_hybrid: True if plug-in hybrid vehicle
+        electric_range_km: Electric-only range in km (for plug-in hybrids)
+        is_camper: True if camper/motorhome vehicle
+    
+    Returns:
+        dict with tax breakdown and total
+    """
+    current_year = datetime.now().year
+    vehicle_age = current_year - first_registration_year
+    
+    # Electric vehicles are exempt
+    if fuel_type == 'electric' or co2_emission == 0:
+        return {
+            'total_ppmv': 0,
+            'vn': 0,
+            'pc': 0,
+            'on': 0,
+            'en': 0,
+            'reduction_percent': 0,
+            'reduction_reason': 'Electric vehicle - exempt from PPMV',
+            'vehicle_age': vehicle_age,
+            'notes': 'Vehicles with 0 CO2 emissions are exempt from PPMV'
+        }
+    
+    # Vehicles 30+ years old (not oldtimer) pay flat rate
+    if vehicle_age >= 30:
+        return {
+            'total_ppmv': 265.45,
+            'vn': 0,
+            'pc': 0,
+            'on': 0,
+            'en': 0,
+            'reduction_percent': 0,
+            'reduction_reason': 'Flat rate for vehicles 30+ years old',
+            'vehicle_age': vehicle_age,
+            'notes': 'Paušalni iznos za vozila starija od 30 godina'
+        }
+    
+    # Determine which tables to use based on first registration date
+    use_wltp = first_registration_year >= 2021
+    
+    # Table 4 - Price component (for vehicles registered from Jan 1, 2021)
+    price_table = [
+        (0, 13272.28, 0, 0),
+        (13272.29, 19908.42, 0, 0),
+        (19908.43, 26544.56, 0, 0),
+        (26544.57, 33180.70, 398.17, 0.03),
+        (33180.71, 39816.84, 597.25, 0.05),
+        (39816.85, 46452.98, 929.06, 0.07),
+        (46452.99, 53089.12, 1393.59, 0.09),
+        (53089.13, 59725.26, 1990.84, 0.11),
+        (59725.27, 66361.40, 2720.82, 0.13),
+        (66361.41, 72997.54, 3583.51, 0.15),
+        (72997.55, 79633.69, 4578.93, 0.16),
+        (79633.70, float('inf'), 5640.71, 0.17),
+    ]
+    
+    # Table 1 - Price component (for vehicles registered before 2021)
+    price_table_old = [
+        (0, 13272.28, 0, 0),
+        (13272.29, 19908.42, 0, 0),
+        (19908.43, 26544.56, 265.45, 0.03),
+        (26544.57, 33180.70, 464.53, 0.05),
+        (33180.71, 39816.84, 796.34, 0.07),
+        (39816.85, 46452.98, 1260.87, 0.09),
+        (46452.99, 53089.12, 1858.12, 0.11),
+        (53089.13, 59725.26, 2588.10, 0.13),
+        (59725.27, 66361.40, 3450.79, 0.14),
+        (66361.41, 72997.54, 4379.85, 0.15),
+        (72997.55, 79633.69, 5375.27, 0.16),
+        (79633.70, float('inf'), 6437.05, 0.17),
+    ]
+    
+    # CO2 tables for WLTP (vehicles from 2021)
+    # Table 5 - Diesel WLTP
+    co2_table_diesel_wltp = [
+        (0, 95, 0, 0),  # Below minimum - no tax
+        (95, 125, 11.28, 13.94),
+        (125, 155, 429.48, 24.55),
+        (155, 190, 1165.98, 146.00),
+        (190, 215, 6275.98, 165.90),
+        (215, 255, 10423.48, 179.18),
+        (255, float('inf'), 17590.68, 205.72),
+    ]
+    
+    # Table 6 - Petrol/LPG/CNG WLTP
+    co2_table_petrol_wltp = [
+        (0, 95, 0, 0),  # Below minimum - no tax
+        (95, 125, 3.32, 5.97),
+        (125, 155, 182.42, 18.58),
+        (155, 175, 739.82, 73.66),
+        (175, 200, 2213.02, 96.22),
+        (200, 240, 4618.52, 129.40),
+        (240, float('inf'), 9794.52, 218.99),
+    ]
+    
+    # CO2 tables for NEDC (vehicles before 2021)
+    # Table 2 - Diesel NEDC
+    co2_table_diesel_nedc = [
+        (0, 70, 0, 0),  # Below minimum - no tax
+        (70, 85, 24.55, 7.30),
+        (85, 120, 134.05, 23.23),
+        (120, 140, 947.10, 152.63),
+        (140, 170, 3999.70, 165.90),
+        (170, 200, 8976.70, 179.18),
+        (200, float('inf'), 14352.10, 192.45),
+    ]
+    
+    # Table 3 - Petrol/LPG/CNG NEDC
+    co2_table_petrol_nedc = [
+        (0, 75, 0, 0),  # Below minimum - no tax
+        (75, 90, 12.61, 4.65),
+        (90, 120, 82.36, 17.92),
+        (120, 140, 619.96, 59.73),
+        (140, 170, 1814.56, 92.91),
+        (170, 200, 4601.86, 159.27),
+        (200, float('inf'), 9379.96, 172.54),
+    ]
+    
+    # Select appropriate tables
+    if use_wltp:
+        active_price_table = price_table
+        if fuel_type.lower() == 'diesel':
+            active_co2_table = co2_table_diesel_wltp
+        else:
+            active_co2_table = co2_table_petrol_wltp
+    else:
+        active_price_table = price_table_old
+        if fuel_type.lower() == 'diesel':
+            active_co2_table = co2_table_diesel_nedc
+        else:
+            active_co2_table = co2_table_petrol_nedc
+    
+    # Calculate VN and PC (price component)
+    vn = 0
+    pc = 0
+    for min_price, max_price, vn_value, percentage in active_price_table:
+        if min_price <= original_price <= max_price or (max_price == float('inf') and original_price >= min_price):
+            vn = vn_value
+            if percentage > 0:
+                pc = (original_price - min_price) * percentage
+            break
+    
+    # Calculate ON and EN (CO2 component)
+    on = 0
+    en = 0
+    for min_co2, max_co2, on_value, eur_per_gkm in active_co2_table:
+        if min_co2 <= co2_emission < max_co2 or (max_co2 == float('inf') and co2_emission >= min_co2):
+            on = on_value
+            if eur_per_gkm > 0:
+                en = (co2_emission - min_co2) * eur_per_gkm
+            break
+    
+    # Calculate base PPMV
+    base_ppmv = (vn + pc) + (on + en)
+    
+    # Apply reductions
+    reduction_percent = 0
+    reduction_reason = ''
+    
+    # Plug-in hybrid reduction (percentage equal to electric range)
+    if is_plugin_hybrid and electric_range_km > 0:
+        reduction_percent = min(electric_range_km, 100)  # Cap at 100%
+        reduction_reason = f'Plug-in hybrid with {electric_range_km}km electric range'
+    
+    # Seat-based reductions
+    if seats == 9:
+        reduction_percent = max(reduction_percent, 75)
+        reduction_reason = '9-seat vehicle (75% reduction)'
+    elif seats == 8:
+        reduction_percent = max(reduction_percent, 50)
+        reduction_reason = '8-seat vehicle (50% reduction)'
+    
+    # Camper reduction
+    if is_camper:
+        reduction_percent = max(reduction_percent, 85)
+        reduction_reason = 'Camper vehicle (85% reduction)'
+    
+    # Apply reduction
+    total_ppmv = base_ppmv * (1 - reduction_percent / 100)
+    
+    # Round to 2 decimal places
+    total_ppmv = round(total_ppmv, 2)
+    vn = round(vn, 2)
+    pc = round(pc, 2)
+    on = round(on, 2)
+    en = round(en, 2)
+    
+    return {
+        'total_ppmv': total_ppmv,
+        'base_ppmv': round(base_ppmv, 2),
+        'vn': vn,
+        'pc': pc,
+        'on': on,
+        'en': en,
+        'price_component': round(vn + pc, 2),
+        'co2_component': round(on + en, 2),
+        'reduction_percent': reduction_percent,
+        'reduction_reason': reduction_reason,
+        'vehicle_age': vehicle_age,
+        'co2_standard': 'WLTP' if use_wltp else 'NEDC',
+        'fuel_type': fuel_type,
+        'original_price': original_price,
+        'co2_emission': co2_emission,
+        'notes': f'Calculated using {"WLTP" if use_wltp else "NEDC"} tables for {fuel_type} vehicles'
+    }
+
+# ============================================================================
 # DATABASE SETUP
 # ============================================================================
 
@@ -1124,6 +1349,7 @@ HTML_TEMPLATE = '''
             <div id="detailsContent"></div>
             <div class="modal-buttons">
                 <button class="btn-primary" onclick="closeDetailsModal()">Close</button>
+                <button class="btn-warning" onclick="openPpmvModal()" style="background: #f39c12; color: white;">🇭🇷 Calculate PPMV Tax</button>
                 <button class="btn-success" id="createOfferBtn" onclick="openCreateOfferModal()">Create Offer</button>
             </div>
         </div>
@@ -1172,6 +1398,94 @@ HTML_TEMPLATE = '''
                     <button type="button" class="btn-success" onclick="submitOffer()">Create & Download PDF</button>
                 </div>
             </form>
+        </div>
+    </div>
+
+    <!-- PPMV Calculator Modal -->
+    <div id="ppmvModal" class="modal">
+        <div class="modal-content" style="max-width: 700px;">
+            <div class="modal-header" style="background: #27ae60;">
+                <h2>🇭🇷 Croatian PPMV Tax Calculator</h2>
+                <button class="modal-close" onclick="closePpmvModal()">&times;</button>
+            </div>
+            <form id="ppmvForm">
+                <div class="form-section">
+                    <div class="section-title">Vehicle Information</div>
+                    <div class="form-row">
+                        <div class="form-group">
+                            <label for="ppmvOriginalPrice">Original New Price (€) *</label>
+                            <input type="number" id="ppmvOriginalPrice" required placeholder="e.g., 45000">
+                            <small style="color: #666;">Novonabavna cijena - original price when new</small>
+                        </div>
+                        <div class="form-group">
+                            <label for="ppmvCo2">CO2 Emission (g/km) *</label>
+                            <input type="number" id="ppmvCo2" required placeholder="e.g., 150">
+                            <small style="color: #666;">WLTP for 2021+, NEDC for older</small>
+                        </div>
+                    </div>
+                    <div class="form-row">
+                        <div class="form-group">
+                            <label for="ppmvFuelType">Fuel Type *</label>
+                            <select id="ppmvFuelType" required>
+                                <option value="petrol">Petrol (Benzin)</option>
+                                <option value="diesel">Diesel</option>
+                                <option value="lpg">LPG</option>
+                                <option value="cng">CNG</option>
+                                <option value="hybrid">Hybrid</option>
+                                <option value="electric">Electric</option>
+                            </select>
+                        </div>
+                        <div class="form-group">
+                            <label for="ppmvYear">First Registration Year *</label>
+                            <input type="number" id="ppmvYear" required placeholder="e.g., 2020" min="1990" max="2026">
+                        </div>
+                    </div>
+                </div>
+
+                <div class="form-section">
+                    <div class="section-title">Special Options (Optional)</div>
+                    <div class="form-row">
+                        <div class="form-group">
+                            <label for="ppmvSeats">Number of Seats</label>
+                            <select id="ppmvSeats">
+                                <option value="5">5 seats (standard)</option>
+                                <option value="4">4 seats</option>
+                                <option value="7">7 seats</option>
+                                <option value="8">8 seats (50% reduction)</option>
+                                <option value="9">9 seats (75% reduction)</option>
+                            </select>
+                        </div>
+                        <div class="form-group">
+                            <label for="ppmvElectricRange">Electric Range (km)</label>
+                            <input type="number" id="ppmvElectricRange" placeholder="For plug-in hybrids only" min="0">
+                            <small style="color: #666;">Only for plug-in hybrid vehicles</small>
+                        </div>
+                    </div>
+                    <div class="form-row">
+                        <div class="form-group">
+                            <label>
+                                <input type="checkbox" id="ppmvPluginHybrid"> Plug-in Hybrid Vehicle
+                            </label>
+                        </div>
+                        <div class="form-group">
+                            <label>
+                                <input type="checkbox" id="ppmvCamper"> Camper / Motorhome (85% reduction)
+                            </label>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="modal-buttons">
+                    <button type="button" class="btn-secondary" onclick="closePpmvModal()">Cancel</button>
+                    <button type="button" class="btn-success" onclick="calculatePpmv()" style="background: #27ae60;">Calculate PPMV Tax</button>
+                </div>
+            </form>
+
+            <!-- PPMV Results -->
+            <div id="ppmvResults" style="display: none; margin-top: 20px; padding: 20px; background: #f8f9fa; border-radius: 8px;">
+                <h3 style="color: #27ae60; margin-bottom: 15px;">📊 PPMV Tax Calculation Results</h3>
+                <div id="ppmvResultsContent"></div>
+            </div>
         </div>
     </div>
 
@@ -1490,15 +1804,170 @@ HTML_TEMPLATE = '''
             link.click();
             document.body.removeChild(link);
         }
+
+        // PPMV Calculator Functions
+        function openPpmvModal() {
+            document.getElementById('ppmvModal').style.display = 'block';
+            document.getElementById('ppmvResults').style.display = 'none';
+            
+            // Pre-fill from current vehicle data if available
+            if (currentVehicleData) {
+                // Try to get year from vehicle data
+                const yearStr = currentVehicleData.year || '';
+                const yearMatch = yearStr.match(/\d{4}/);
+                if (yearMatch) {
+                    document.getElementById('ppmvYear').value = yearMatch[0];
+                }
+                
+                // Try to get fuel type
+                const fuelType = (currentVehicleData.fuel || '').toLowerCase();
+                if (fuelType.includes('diesel')) {
+                    document.getElementById('ppmvFuelType').value = 'diesel';
+                } else if (fuelType.includes('petrol') || fuelType.includes('benzin')) {
+                    document.getElementById('ppmvFuelType').value = 'petrol';
+                } else if (fuelType.includes('electric')) {
+                    document.getElementById('ppmvFuelType').value = 'electric';
+                } else if (fuelType.includes('hybrid')) {
+                    document.getElementById('ppmvFuelType').value = 'hybrid';
+                }
+                
+                // Try to get price as estimate for original price
+                const priceStr = String(currentVehicleData.price || '').replace(/[^0-9]/g, '');
+                if (priceStr) {
+                    document.getElementById('ppmvOriginalPrice').value = priceStr;
+                }
+            }
+        }
+
+        function closePpmvModal() {
+            document.getElementById('ppmvModal').style.display = 'none';
+        }
+
+        function calculatePpmv() {
+            const originalPrice = parseFloat(document.getElementById('ppmvOriginalPrice').value);
+            const co2 = parseFloat(document.getElementById('ppmvCo2').value);
+            const fuelType = document.getElementById('ppmvFuelType').value;
+            const year = parseInt(document.getElementById('ppmvYear').value);
+            const seats = parseInt(document.getElementById('ppmvSeats').value);
+            const electricRange = parseInt(document.getElementById('ppmvElectricRange').value) || 0;
+            const isPluginHybrid = document.getElementById('ppmvPluginHybrid').checked;
+            const isCamper = document.getElementById('ppmvCamper').checked;
+
+            if (!originalPrice || !co2 || !year) {
+                showMessage('Please fill in all required fields', 'error');
+                return;
+            }
+
+            fetch('/api/calculate-ppmv', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    original_price: originalPrice,
+                    co2_emission: co2,
+                    fuel_type: fuelType,
+                    first_registration_year: year,
+                    seats: seats,
+                    electric_range_km: electricRange,
+                    is_plugin_hybrid: isPluginHybrid,
+                    is_camper: isCamper
+                })
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.success) {
+                    displayPpmvResults(data.result);
+                } else {
+                    showMessage(data.error || 'Failed to calculate PPMV', 'error');
+                }
+            })
+            .catch(error => {
+                showMessage('Error: ' + error.message, 'error');
+            });
+        }
+
+        function displayPpmvResults(result) {
+            const resultsDiv = document.getElementById('ppmvResults');
+            const contentDiv = document.getElementById('ppmvResultsContent');
+            
+            let html = `
+                <div style="background: #27ae60; color: white; padding: 15px; border-radius: 8px; margin-bottom: 15px; text-align: center;">
+                    <h2 style="margin: 0;">Total PPMV Tax: €${result.total_ppmv.toLocaleString('de-DE', {minimumFractionDigits: 2})}</h2>
+                </div>
+                
+                <table style="width: 100%; border-collapse: collapse; margin-bottom: 15px;">
+                    <tr style="background: #e9ecef;">
+                        <th style="padding: 10px; text-align: left; border: 1px solid #dee2e6;">Component</th>
+                        <th style="padding: 10px; text-align: right; border: 1px solid #dee2e6;">Amount (€)</th>
+                    </tr>
+                    <tr>
+                        <td style="padding: 10px; border: 1px solid #dee2e6;"><strong>Price Component</strong></td>
+                        <td style="padding: 10px; text-align: right; border: 1px solid #dee2e6;">€${result.price_component?.toLocaleString('de-DE', {minimumFractionDigits: 2}) || '0.00'}</td>
+                    </tr>
+                    <tr style="background: #f8f9fa;">
+                        <td style="padding: 10px; border: 1px solid #dee2e6; padding-left: 30px;">- VN (Base fee)</td>
+                        <td style="padding: 10px; text-align: right; border: 1px solid #dee2e6;">€${result.vn?.toLocaleString('de-DE', {minimumFractionDigits: 2}) || '0.00'}</td>
+                    </tr>
+                    <tr style="background: #f8f9fa;">
+                        <td style="padding: 10px; border: 1px solid #dee2e6; padding-left: 30px;">- PC (Price surcharge)</td>
+                        <td style="padding: 10px; text-align: right; border: 1px solid #dee2e6;">€${result.pc?.toLocaleString('de-DE', {minimumFractionDigits: 2}) || '0.00'}</td>
+                    </tr>
+                    <tr>
+                        <td style="padding: 10px; border: 1px solid #dee2e6;"><strong>CO2 Component</strong></td>
+                        <td style="padding: 10px; text-align: right; border: 1px solid #dee2e6;">€${result.co2_component?.toLocaleString('de-DE', {minimumFractionDigits: 2}) || '0.00'}</td>
+                    </tr>
+                    <tr style="background: #f8f9fa;">
+                        <td style="padding: 10px; border: 1px solid #dee2e6; padding-left: 30px;">- ON (Base CO2 fee)</td>
+                        <td style="padding: 10px; text-align: right; border: 1px solid #dee2e6;">€${result.on?.toLocaleString('de-DE', {minimumFractionDigits: 2}) || '0.00'}</td>
+                    </tr>
+                    <tr style="background: #f8f9fa;">
+                        <td style="padding: 10px; border: 1px solid #dee2e6; padding-left: 30px;">- EN (CO2 surcharge)</td>
+                        <td style="padding: 10px; text-align: right; border: 1px solid #dee2e6;">€${result.en?.toLocaleString('de-DE', {minimumFractionDigits: 2}) || '0.00'}</td>
+                    </tr>
+                </table>
+                
+                <div style="background: #e9ecef; padding: 10px; border-radius: 5px; margin-bottom: 10px;">
+                    <strong>Calculation Details:</strong><br>
+                    • Vehicle Age: ${result.vehicle_age} years<br>
+                    • CO2 Standard: ${result.co2_standard || 'N/A'}<br>
+                    • Fuel Type: ${result.fuel_type}<br>
+                    • Original Price: €${result.original_price?.toLocaleString('de-DE') || 'N/A'}<br>
+                    • CO2 Emission: ${result.co2_emission} g/km
+                </div>
+            `;
+            
+            if (result.reduction_percent > 0) {
+                html += `
+                    <div style="background: #d4edda; padding: 10px; border-radius: 5px; color: #155724;">
+                        <strong>✅ Reduction Applied:</strong> ${result.reduction_percent}%<br>
+                        Reason: ${result.reduction_reason}
+                    </div>
+                `;
+            }
+            
+            if (result.notes) {
+                html += `
+                    <div style="margin-top: 10px; font-size: 12px; color: #666;">
+                        <em>ℹ️ ${result.notes}</em>
+                    </div>
+                `;
+            }
+            
+            contentDiv.innerHTML = html;
+            resultsDiv.style.display = 'block';
+        }
         
         window.onclick = function(event) {
             const detailsModal = document.getElementById('detailsModal');
             const createOfferModal = document.getElementById('createOfferModal');
+            const ppmvModal = document.getElementById('ppmvModal');
             if (event.target == detailsModal) {
                 detailsModal.style.display = 'none';
             }
             if (event.target == createOfferModal) {
                 createOfferModal.style.display = 'none';
+            }
+            if (event.target == ppmvModal) {
+                ppmvModal.style.display = 'none';
             }
         }
     </script>
@@ -2205,6 +2674,45 @@ def index():
                                  vehicles=VEHICLES,
                                  vehicles_json=json.dumps(VEHICLES),
                                  features=FEATURES)
+
+@app.route('/api/calculate-ppmv', methods=['POST'])
+def api_calculate_ppmv():
+    """Calculate Croatian PPMV tax for a vehicle"""
+    try:
+        data = request.json
+        
+        original_price = float(data.get('original_price', 0))
+        co2_emission = float(data.get('co2_emission', 0))
+        fuel_type = data.get('fuel_type', 'petrol')
+        first_registration_year = int(data.get('first_registration_year', datetime.now().year))
+        seats = int(data.get('seats', 5))
+        electric_range_km = int(data.get('electric_range_km', 0))
+        is_plugin_hybrid = data.get('is_plugin_hybrid', False)
+        is_camper = data.get('is_camper', False)
+        
+        logger.info(f'Calculating PPMV: price={original_price}, co2={co2_emission}, fuel={fuel_type}, year={first_registration_year}')
+        
+        result = calculate_ppmv(
+            original_price=original_price,
+            co2_emission=co2_emission,
+            fuel_type=fuel_type,
+            first_registration_year=first_registration_year,
+            seats=seats,
+            is_plugin_hybrid=is_plugin_hybrid,
+            electric_range_km=electric_range_km,
+            is_camper=is_camper
+        )
+        
+        logger.info(f'PPMV calculation result: {result["total_ppmv"]} EUR')
+        
+        return jsonify({
+            'success': True,
+            'result': result
+        })
+        
+    except Exception as e:
+        logger.error(f'Error calculating PPMV: {str(e)}')
+        return jsonify({'success': False, 'error': str(e)}), 500
 
 @app.route('/api/vehicle-details', methods=['POST'])
 def get_vehicle_details():
