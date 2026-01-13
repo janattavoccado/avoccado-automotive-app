@@ -930,6 +930,191 @@ def generate_offer_pdf(vehicle_data: dict, offer_data: dict, client_email: str) 
     buffer.seek(0)
     return buffer.getvalue()
 
+
+def generate_ppmv_pdf(ppmv_result: dict, vehicle_title: str = 'Vehicle') -> bytes:
+    """Generate PDF report for PPMV tax calculation"""
+    buffer = BytesIO()
+    doc = SimpleDocTemplate(buffer, pagesize=letter, topMargin=0.5*inch, bottomMargin=0.5*inch)
+    
+    # Styles
+    styles = getSampleStyleSheet()
+    title_style = ParagraphStyle(
+        'CustomTitle',
+        parent=styles['Heading1'],
+        fontSize=24,
+        textColor=colors.HexColor('#27ae60'),
+        spaceAfter=30,
+        alignment=1
+    )
+    
+    heading_style = ParagraphStyle(
+        'CustomHeading',
+        parent=styles['Heading2'],
+        fontSize=14,
+        textColor=colors.HexColor('#27ae60'),
+        spaceAfter=12,
+        spaceBefore=12
+    )
+    
+    total_style = ParagraphStyle(
+        'TotalStyle',
+        parent=styles['Heading1'],
+        fontSize=20,
+        textColor=colors.white,
+        alignment=1
+    )
+    
+    # Build document
+    elements = []
+    
+    # Add logo at top left if it exists
+    if os.path.exists(LOGO_PATH):
+        try:
+            from PIL import Image as PILImage
+            with PILImage.open(LOGO_PATH) as img:
+                img_width, img_height = img.size
+                aspect_ratio = img_width / img_height
+            
+            logo_width = 2.5 * inch
+            logo_height = logo_width / aspect_ratio
+            
+            logo = Image(LOGO_PATH, width=logo_width, height=logo_height)
+            logo.hAlign = 'LEFT'
+            elements.append(logo)
+            elements.append(Spacer(1, 0.3*inch))
+        except Exception as e:
+            logger.warning(f'Could not load logo: {str(e)}')
+    
+    # Title
+    elements.append(Paragraph('CROATIAN PPMV TAX CALCULATION', title_style))
+    elements.append(Paragraph('Posebni Porez na Motorna Vozila', ParagraphStyle(
+        'subtitle', parent=styles['Normal'], fontSize=12, textColor=colors.grey, alignment=1
+    )))
+    elements.append(Spacer(1, 0.2*inch))
+    
+    # Calculation date and vehicle
+    calc_date = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    elements.append(Paragraph(f'<b>Calculation Date:</b> {calc_date}', styles['Normal']))
+    elements.append(Paragraph(f'<b>Vehicle:</b> {vehicle_title}', styles['Normal']))
+    elements.append(Spacer(1, 0.3*inch))
+    
+    # Total PPMV Tax - Green box
+    total_ppmv = ppmv_result.get('total_ppmv', 0)
+    total_table = Table(
+        [[Paragraph(f'<b>TOTAL PPMV TAX: €{total_ppmv:,.2f}</b>', total_style)]],
+        colWidths=[6*inch]
+    )
+    total_table.setStyle(TableStyle([
+        ('BACKGROUND', (0, 0), (-1, -1), colors.HexColor('#27ae60')),
+        ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
+        ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+        ('TOPPADDING', (0, 0), (-1, -1), 15),
+        ('BOTTOMPADDING', (0, 0), (-1, -1), 15),
+        ('LEFTPADDING', (0, 0), (-1, -1), 20),
+        ('RIGHTPADDING', (0, 0), (-1, -1), 20),
+    ]))
+    elements.append(total_table)
+    elements.append(Spacer(1, 0.3*inch))
+    
+    # Tax Breakdown
+    elements.append(Paragraph('TAX BREAKDOWN', heading_style))
+    
+    breakdown_data = [
+        ['Component', 'Amount (€)'],
+        ['Price Component', f"€{ppmv_result.get('price_component', 0):,.2f}"],
+        ['  - VN (Base fee)', f"€{ppmv_result.get('vn', 0):,.2f}"],
+        ['  - PC (Price surcharge)', f"€{ppmv_result.get('pc', 0):,.2f}"],
+        ['CO2 Component', f"€{ppmv_result.get('co2_component', 0):,.2f}"],
+        ['  - ON (Base CO2 fee)', f"€{ppmv_result.get('on', 0):,.2f}"],
+        ['  - EN (CO2 surcharge)', f"€{ppmv_result.get('en', 0):,.2f}"],
+    ]
+    
+    breakdown_table = Table(breakdown_data, colWidths=[4*inch, 2*inch])
+    breakdown_table.setStyle(TableStyle([
+        ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#27ae60')),
+        ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
+        ('ALIGN', (0, 0), (0, -1), 'LEFT'),
+        ('ALIGN', (1, 0), (1, -1), 'RIGHT'),
+        ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+        ('FONTSIZE', (0, 0), (-1, 0), 12),
+        ('BOTTOMPADDING', (0, 0), (-1, 0), 12),
+        ('GRID', (0, 0), (-1, -1), 1, colors.black),
+        ('ROWBACKGROUNDS', (0, 1), (-1, -1), [colors.white, colors.HexColor('#f8f9fa')]),
+        ('FONTNAME', (0, 1), (0, 1), 'Helvetica-Bold'),
+        ('FONTNAME', (0, 4), (0, 4), 'Helvetica-Bold'),
+    ]))
+    elements.append(breakdown_table)
+    elements.append(Spacer(1, 0.3*inch))
+    
+    # Vehicle Details
+    elements.append(Paragraph('CALCULATION DETAILS', heading_style))
+    
+    details_data = [
+        ['Parameter', 'Value'],
+        ['Original Price (Novonabavna cijena)', f"€{ppmv_result.get('original_price', 0):,.2f}"],
+        ['CO2 Emission', f"{ppmv_result.get('co2_emission', 0)} g/km"],
+        ['Fuel Type', ppmv_result.get('fuel_type', 'N/A')],
+        ['First Registration Year', str(ppmv_result.get('first_registration_year', 'N/A'))],
+        ['Vehicle Age', f"{ppmv_result.get('vehicle_age', 0)} years"],
+        ['CO2 Standard', ppmv_result.get('co2_standard', 'N/A')],
+    ]
+    
+    details_table = Table(details_data, colWidths=[3.5*inch, 2.5*inch])
+    details_table.setStyle(TableStyle([
+        ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#6c757d')),
+        ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
+        ('ALIGN', (0, 0), (-1, -1), 'LEFT'),
+        ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+        ('FONTSIZE', (0, 0), (-1, 0), 11),
+        ('BOTTOMPADDING', (0, 0), (-1, 0), 10),
+        ('GRID', (0, 0), (-1, -1), 1, colors.black),
+        ('ROWBACKGROUNDS', (0, 1), (-1, -1), [colors.white, colors.HexColor('#e9ecef')]),
+    ]))
+    elements.append(details_table)
+    elements.append(Spacer(1, 0.2*inch))
+    
+    # Reduction info if applicable
+    reduction_percent = ppmv_result.get('reduction_percent', 0)
+    if reduction_percent > 0:
+        elements.append(Spacer(1, 0.1*inch))
+        reduction_table = Table(
+            [[Paragraph(f'<b>Reduction Applied: {reduction_percent}%</b><br/>{ppmv_result.get("reduction_reason", "")}', 
+                       ParagraphStyle('reduction', parent=styles['Normal'], textColor=colors.HexColor('#155724')))]],
+            colWidths=[6*inch]
+        )
+        reduction_table.setStyle(TableStyle([
+            ('BACKGROUND', (0, 0), (-1, -1), colors.HexColor('#d4edda')),
+            ('ALIGN', (0, 0), (-1, -1), 'LEFT'),
+            ('TOPPADDING', (0, 0), (-1, -1), 10),
+            ('BOTTOMPADDING', (0, 0), (-1, -1), 10),
+            ('LEFTPADDING', (0, 0), (-1, -1), 15),
+        ]))
+        elements.append(reduction_table)
+    
+    # Notes
+    if ppmv_result.get('notes'):
+        elements.append(Spacer(1, 0.2*inch))
+        elements.append(Paragraph(f'<i>Note: {ppmv_result.get("notes")}</i>', 
+                                 ParagraphStyle('note', parent=styles['Normal'], fontSize=10, textColor=colors.grey)))
+    
+    # Footer
+    elements.append(Spacer(1, 0.4*inch))
+    elements.append(Paragraph('---', styles['Normal']))
+    elements.append(Paragraph(
+        'This PPMV calculation is for informational purposes only. Official tax amounts may vary.',
+        ParagraphStyle('footer', parent=styles['Normal'], fontSize=8, textColor=colors.grey)
+    ))
+    elements.append(Paragraph(
+        'Based on Croatian law: Zakon o posebnom porezu na motorna vozila (NN 156/2022)',
+        ParagraphStyle('footer2', parent=styles['Normal'], fontSize=8, textColor=colors.grey)
+    ))
+    
+    # Build PDF
+    doc.build(elements)
+    buffer.seek(0)
+    return buffer.getvalue()
+
+
 # ============================================================================
 # VEHICLE DATABASE
 # ============================================================================
@@ -1485,6 +1670,11 @@ HTML_TEMPLATE = '''
             <div id="ppmvResults" style="display: none; margin-top: 20px; padding: 20px; background: #f8f9fa; border-radius: 8px;">
                 <h3 style="color: #27ae60; margin-bottom: 15px;">📊 PPMV Tax Calculation Results</h3>
                 <div id="ppmvResultsContent"></div>
+                <div style="margin-top: 20px; text-align: center;">
+                    <button onclick="downloadPpmvPdf()" class="btn-success" style="background: #27ae60; padding: 12px 30px; font-size: 16px;">
+                        📄 Download PDF Report
+                    </button>
+                </div>
             </div>
         </div>
     </div>
@@ -1885,7 +2075,10 @@ HTML_TEMPLATE = '''
             });
         }
 
+        let currentPpmvResult = null;  // Store PPMV result for PDF generation
+
         function displayPpmvResults(result) {
+            currentPpmvResult = result;  // Store for PDF download
             const resultsDiv = document.getElementById('ppmvResults');
             const contentDiv = document.getElementById('ppmvResultsContent');
             
@@ -1954,6 +2147,43 @@ HTML_TEMPLATE = '''
             
             contentDiv.innerHTML = html;
             resultsDiv.style.display = 'block';
+        }
+
+        function downloadPpmvPdf() {
+            if (!currentPpmvResult) {
+                showMessage('No PPMV calculation to download', 'error');
+                return;
+            }
+            
+            // Get vehicle title if available
+            const vehicleTitle = currentVehicleData ? currentVehicleData.title : 'Vehicle';
+            
+            fetch('/api/download-ppmv-pdf', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    ppmv_result: currentPpmvResult,
+                    vehicle_title: vehicleTitle
+                })
+            })
+            .then(response => {
+                if (!response.ok) throw new Error('Failed to generate PDF');
+                return response.blob();
+            })
+            .then(blob => {
+                const url = window.URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = `ppmv_calculation_${new Date().toISOString().slice(0,10)}.pdf`;
+                document.body.appendChild(a);
+                a.click();
+                window.URL.revokeObjectURL(url);
+                document.body.removeChild(a);
+                showMessage('PDF downloaded successfully!', 'success');
+            })
+            .catch(error => {
+                showMessage('Error downloading PDF: ' + error.message, 'error');
+            });
         }
         
         window.onclick = function(event) {
@@ -2713,6 +2943,35 @@ def api_calculate_ppmv():
     except Exception as e:
         logger.error(f'Error calculating PPMV: {str(e)}')
         return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@app.route('/api/download-ppmv-pdf', methods=['POST'])
+def download_ppmv_pdf():
+    """Generate and download PDF for PPMV calculation"""
+    try:
+        data = request.json
+        ppmv_result = data.get('ppmv_result')
+        vehicle_title = data.get('vehicle_title', 'Vehicle')
+        
+        if not ppmv_result:
+            return jsonify({'success': False, 'error': 'No PPMV result provided'}), 400
+        
+        logger.info(f'Generating PPMV PDF for: {vehicle_title}')
+        
+        # Generate PDF
+        pdf_bytes = generate_ppmv_pdf(ppmv_result, vehicle_title)
+        
+        # Return PDF as download
+        response = make_response(pdf_bytes)
+        response.headers['Content-Type'] = 'application/pdf'
+        response.headers['Content-Disposition'] = f'attachment; filename=ppmv_calculation_{datetime.now().strftime("%Y%m%d_%H%M%S")}.pdf'
+        
+        return response
+        
+    except Exception as e:
+        logger.error(f'Error generating PPMV PDF: {str(e)}')
+        return jsonify({'success': False, 'error': str(e)}), 500
+
 
 @app.route('/api/vehicle-details', methods=['POST'])
 def get_vehicle_details():
