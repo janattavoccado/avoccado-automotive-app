@@ -2117,37 +2117,80 @@ ADMIN_TEMPLATE = '''
 </html>
 '''
 
+def parse_number(value_str):
+    """Parse a number string that may contain European formatting (commas, dots, spaces)"""
+    if not value_str or value_str == 'N/A':
+        return None
+    
+    # Convert to string and clean up
+    s = str(value_str)
+    
+    # Remove common suffixes and prefixes
+    s = s.replace('km', '').replace('€', '').replace('EUR', '')
+    
+    # Remove all types of spaces (including non-breaking space \xa0)
+    s = s.replace(' ', '').replace('\xa0', '').replace('\u00a0', '')
+    
+    # Remove thousand separators (both comma and dot can be used)
+    # European format: 110.000 or 110,000
+    # We need to detect which is the decimal separator
+    
+    # If there's both comma and dot, the last one is likely decimal
+    # For mileage/price, we typically don't have decimals, so remove both
+    s = s.replace(',', '').replace('.', '')
+    
+    # Strip any remaining whitespace
+    s = s.strip()
+    
+    # Try to convert to integer
+    try:
+        return int(s) if s else None
+    except ValueError:
+        # Try to extract just digits
+        digits = ''.join(c for c in s if c.isdigit())
+        return int(digits) if digits else None
+
 def filter_listings(listings, criteria):
     """Filter listings based on search criteria"""
     filtered = []
     
     for item in listings:
         try:
+            # Parse year
             year_str = item.get('year', '')
             if year_str and year_str != 'N/A':
-                year = int(year_str.split('/')[-1]) if '/' in year_str else int(year_str)
+                year = int(year_str.split('/')[-1]) if '/' in str(year_str) else int(year_str)
             else:
                 year = None
             
-            mileage_str = str(item.get('mileage', '')).replace('km', '').replace('.', '').strip()
-            mileage = int(mileage_str) if mileage_str.isdigit() else None
+            # Parse mileage using the robust parser
+            mileage = parse_number(item.get('mileage', ''))
             
-            price_str = str(item.get('price', '')).replace('€', '').replace('.', '').strip()
-            price = int(price_str) if price_str.isdigit() else None
+            # Parse price using the robust parser
+            price = parse_number(item.get('price', ''))
             
+            # Log for debugging
+            logger.debug(f'Filtering: {item.get("title", "Unknown")} - mileage={mileage}, price={price}, year={year}')
+            
+            # Apply year filter
             if criteria.get('modelYear'):
                 min_year = int(criteria['modelYear'])
                 if year and year < min_year:
+                    logger.debug(f'Filtered out by year: {year} < {min_year}')
                     continue
             
+            # Apply mileage filter
             if criteria.get('mileage'):
                 max_mileage = int(criteria['mileage'])
-                if mileage and mileage > max_mileage:
+                if mileage is not None and mileage > max_mileage:
+                    logger.debug(f'Filtered out by mileage: {mileage} > {max_mileage}')
                     continue
             
+            # Apply price filter
             if criteria.get('price'):
                 max_price = int(criteria['price'])
-                if price and price > max_price:
+                if price is not None and price > max_price:
+                    logger.debug(f'Filtered out by price: {price} > {max_price}')
                     continue
             
             filtered.append(item)
