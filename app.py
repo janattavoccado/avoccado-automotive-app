@@ -2026,6 +2026,27 @@ HTML_TEMPLATE = '''
                 if (priceStr) {
                     document.getElementById('ppmvOriginalPrice').value = priceStr;
                 }
+                
+                // Try to get CO2 emission from properties
+                if (currentVehicleData.properties && currentVehicleData.properties.co2Emission) {
+                    const co2Str = String(currentVehicleData.properties.co2Emission);
+                    const co2Match = co2Str.match(/\d+/);
+                    if (co2Match) {
+                        document.getElementById('ppmvCo2').value = co2Match[0];
+                    }
+                }
+                
+                // Try to get number of seats from properties
+                if (currentVehicleData.properties && currentVehicleData.properties.seats) {
+                    const seatsStr = String(currentVehicleData.properties.seats);
+                    const seatsMatch = seatsStr.match(/\d+/);
+                    if (seatsMatch) {
+                        const seats = parseInt(seatsMatch[0]);
+                        if (seats >= 8) {
+                            document.getElementById('ppmvSeats').value = seats >= 9 ? '9' : '8';
+                        }
+                    }
+                }
             }
         }
 
