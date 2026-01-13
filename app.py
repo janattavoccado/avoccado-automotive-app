@@ -647,7 +647,6 @@ def generate_offer_pdf(vehicle_data: dict, offer_data: dict, client_email: str) 
         ['Fuel Type', vehicle_data.get('fuel', 'N/A')],
         ['Transmission', vehicle_data.get('transmission', 'N/A')],
         ['Power', vehicle_data.get('power', 'N/A')],
-        ['URL', vehicle_data.get('url', 'N/A')[:50] + '...'],
     ]
     
     vehicle_table = Table(vehicle_data_list, colWidths=[2*inch, 4*inch])
@@ -2254,15 +2253,24 @@ def get_vehicle_details():
                         mileage = properties.get('milage', item.get('mileage', 'N/A'))
                         year = properties.get('firstRegistration', item.get('year', 'N/A'))
                         
+                        # Get fuel type from properties.fuelType
+                        fuel = properties.get('fuelType', item.get('fuel', 'N/A'))
+                        
+                        # Get transmission from properties.gearbox
+                        transmission = properties.get('gearbox', item.get('transmission', 'N/A'))
+                        
+                        # Get power from properties.power
+                        power = properties.get('power', item.get('power', 'N/A'))
+                        
                         details = {
                             'title': item.get('title', 'N/A'),
                             'price': str(price) if price != 'N/A' else 'N/A',
                             'url': item.get('url', url),
                             'mileage': str(mileage) if mileage != 'N/A' else 'N/A',
                             'year': str(year) if year != 'N/A' else 'N/A',
-                            'fuel': item.get('fuel', 'N/A'),
-                            'transmission': item.get('transmission', 'N/A'),
-                            'power': item.get('power', 'N/A'),
+                            'fuel': str(fuel) if fuel else 'N/A',
+                            'transmission': str(transmission) if transmission else 'N/A',
+                            'power': str(power) if power else 'N/A',
                             'properties': properties
                         }
                         
