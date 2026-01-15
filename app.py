@@ -20,6 +20,9 @@ from reportlab.lib.units import inch
 from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, Image
 from reportlab.lib import colors
 
+# Import the import flow template
+from import_flow_template import IMPORT_FLOW_TEMPLATE
+
 # Try to import psycopg2 for PostgreSQL, fall back to sqlite3 for local development
 try:
     import psycopg2
@@ -1251,6 +1254,7 @@ HTML_TEMPLATE = '''
                         <p style="margin: 5px 0 0 0;">Search for vehicles, create offers, and manage your CRM</p>
                     </div>
                 </div>
+                <a href="/import-guide" style="background: #27ae60; color: white; padding: 10px 20px; border-radius: 5px; text-decoration: none; font-weight: 500; margin-right: 10px;">📋 Import Guide</a>
                 <a href="/admin" style="background: #1a1a2e; color: white; padding: 10px 20px; border-radius: 5px; text-decoration: none; font-weight: 500;">Admin Dashboard</a>
             </div>
         </div>
@@ -2453,6 +2457,7 @@ ADMIN_TEMPLATE = '''
         <div class="navbar-links">
             <a href="/">Vehicle Search</a>
             <a href="/admin" class="active">Admin Dashboard</a>
+            <a href="/import-guide">Import Guide</a>
         </div>
     </nav>
     
@@ -3240,6 +3245,11 @@ def download_offer_pdf(offer_id):
 # ============================================================================
 # ADMIN API ENDPOINTS
 # ============================================================================
+
+@app.route('/import-guide')
+def import_guide():
+    """Import process guide page"""
+    return render_template_string(IMPORT_FLOW_TEMPLATE)
 
 @app.route('/admin')
 def admin_dashboard():
